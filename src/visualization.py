@@ -1,4 +1,4 @@
-"""PyDeck visualizations for the timeline map."""
+"""PyDeckによる移動軌跡表示."""
 
 from __future__ import annotations
 
@@ -6,55 +6,97 @@ import pandas as pd
 import pydeck as pdk
 
 
-def create_map(frame: pd.DataFrame, zoom: float = 11) -> pdk.Deck:
-    visible = frame.dropna(subset=["latitude", "longitude"]).copy()
+COLORS = {
+    "walking": [30, 150, 80],
+    "running": [220, 80, 80],
+    "cycling": [240, 160, 30],
+    "driving": [70, 100, 220],
+    "transit": [150, 70, 180],
+    "still": [120, 120, 120],
+    "unknown": [40, 140, 180],
+}
+
+
+def create_map(
+    frame: pd.DataFrame,
+    zoom: float = 11,
+) -> pdk.Deck:
+    """地点と移動手段別の経路を地図に表示する."""
+    visible = frame.dropna(
+        subset=["latitude", "longitude"]
+    ).copy()
+
     if visible.empty:
-        visible = pd.DataFrame({"latitude": [35.1234], "longitude": [139.5678], "activity_type": ["データなし"]})
-    points = pdk.Layer(
+        return pdk.Deck(
+            layers=[],
+            initial_view_state=pdk.ViewState(
+                latitude=35.0,
+                longitude=139.0,
+                zoom=zoom,
+            ),
+        )
+
+    visible["movement_mode"] = (
+        visible["activity_type"]
+        .fillna("unknown")
+        .astype(str)
+    )
+
+    path_records = []
+
+    for mode, group in visible.groupby(
+        "movement_mode",
+        sort=False,
+    ):
+        if len(group) > 1:
+            path_records.append(
+                {
+                    "movement_mode": mode,
+                    "path": group[
+                        ["longitude", "latitude"]
+                    ].values.tolist(),
+                    "color": COLORS.get(
+                        mode,
+                        COLORS["unknown"],
+                    ),
+                }
+            )
+
+    point_layer = pdk.Layer(
         "ScatterplotLayer",
         data=visible,
         get_position="[longitude, latitude]",
         get_radius=35,
-        get_fill_color="[40, 120, 220, 180]",
+        get_fill_color="[40, 140, 220, 180]",
         pickable=True,
-        auto_highlight=True,
     )
-    path_data = (
-        visible.sort_values("timestamp")
-        .groupby("activity_type", dropna=False, sort=False)
-        .apply(
-            lambda group: {
-                "activity_type": group["activity_type"].iloc[0],
-                "path": group[["longitude", "latitude"]].values.tolist(),
-            },
-            include_groups=False,
+
+    layers = [point_layer]
+
+    if path_records:
+        path_layer = pdk.Layer(
+            "PathLayer",
+            data=path_records,
+            get_path="path",
+            get_color="color",
+            get_width=5,
+            width_min_pixels=2,
+            pickable=True,
         )
-        .tolist()
-    )
-    paths = pdk.Layer(
-        "PathLayer",
-        data=path_data,
-        get_path="path",
-        get_width=5,
-        get_color="[40, 120, 220, 190]",
-        width_min_pixels=2,
-        pickable=True,
-    )
-    view_state = pdk.ViewState(
-        latitude=float(visible["latitude"].mean()),
-        longitude=float(visible["longitude"].mean()),
-        zoom=zoom,
-        pitch=0,
-    )
+        layers.insert(0, path_layer)
+
     return pdk.Deck(
-        layers=[paths, points],
-        initial_view_state=view_state,
-        tooltip={"html": "<b>{activity_type}</b><br/>時刻: {timestamp}", "style": {"backgroundColor": "#222"}},
+        layers=layers,
+        initial_view_state=pdk.ViewState(
+            latitude=float(visible["latitude"].mean()),
+            longitude=float(visible["longitude"].mean()),
+            zoom=zoom,
+        ),
+        tooltip={
+            "html": (
+                "<b>{movement_mode}</b>"
+                "<br/>{timestamp}"
+            ),
+        },
         map_style=None,
     )
-
-
-def filter_activities(frame: pd.DataFrame, activities: list[str]) -> pd.DataFrame:
-    if not activities or "activity_type" not in frame:
-        return frame.copy(deep=True)
-    return frame[frame["activity_type"].isin(activities)].copy()
