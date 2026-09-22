@@ -101,8 +101,6 @@ def render_analyzer() -> None:
 
     uploaded = st.sidebar.file_uploader("Timeline JSONを選択", type=["json"])
     use_sample = st.sidebar.checkbox("サンプルデータを使う", value=uploaded is None)
-    stride = st.sidebar.number_input("歩幅（m）", min_value=0.3, max_value=1.5, value=0.70, step=0.01)
-    weight = st.sidebar.number_input("体重（kg）", min_value=20.0, max_value=200.0, value=65.0, step=0.5)
 
     try:
         if uploaded is not None and not use_sample:
@@ -112,7 +110,7 @@ def render_analyzer() -> None:
         else:
             st.info("JSONファイルをアップロードしてください。")
             return
-        data = _process(payload, stride, weight)
+        data = _process(payload, stride=st.sidebar.number_input("歩幅（m）", min_value=0.3, max_value=1.5, value=0.70, step=0.01), weight=st.sidebar.number_input("体重（kg）", min_value=20.0, max_value=200.0, value=65.0, step=0.5))
     except (ValueError, TypeError, json.JSONDecodeError) as error:
         st.error(f"JSONを読み込めませんでした（形式または必須項目を確認してください）: {error}")
         return
@@ -123,12 +121,23 @@ def render_analyzer() -> None:
 
     data["date"] = data["timestamp"].dt.date
     available_dates = sorted(data["date"].dropna().unique())
+    if not available_dates:
+        st.warning("日付情報が見つからないため、分析対象日を選べません。Timeline JSONの時刻データを確認してください。")
+        return
+
     selected_date = st.sidebar.selectbox("分析対象日", available_dates, index=len(available_dates) - 1)
     period = st.sidebar.selectbox("表示期間", ["選択日のみ", "全期間"])
     activities = sorted(data["activity_type"].dropna().unique().tolist())
+    if not activities:
+        st.warning("移動手段の情報が見つからないため、フィルターを適用できません。")
+        return
+
     selected = st.sidebar.multiselect("移動手段フィルター", activities, default=activities)
     period_data = data if period == "全期間" else data[data["date"] == selected_date]
     filtered = filter_activities(period_data, selected)
+    if filtered.empty:
+        st.warning("選択した条件に合うデータがありません。フィルター条件を変えてください。")
+        return
 
     distance = filtered["distance"].fillna(0).clip(lower=0).sum()
     duration = filtered["duration"].fillna(0).clip(lower=0).sum()
