@@ -1,0 +1,27 @@
+{
+  "timelineObjects": [
+    {
+      "activitySegment": {
+        "startTime": "2026-09-20T09:00:00Z",
+        "endTime": "2026-09-20T09:10:00Z",
+        "activityType": "WALKING",
+        "distanceMeters": 720,
+        "startLocation": {"latitudeE7": 351234000, "longitudeE7": 1395678000},
+        "endLocation": {"latitudeE7": 351240000, "longitudeE7": 1395728000}
+      }
+    },
+    {
+      "timestamp": "2026-09-20T09:05:00Z",
+      "latitude": 35.1237,
+      "longitude": 139.5700,
+      "activityType": "WALKING",
+      "speedMetersPerSecond": 1.2
+    },
+    {
+      "timestamp": "2026-09-20T09:30:00Z",
+      "location": {"latitude": 35.1300, "longitude": 139.5800},
+      "activityType": "STILL",
+      "durationSeconds": 900
+    }
+  ]
+}
