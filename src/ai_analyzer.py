@@ -72,33 +72,11 @@ def generate_activity_summary(
         ),
     )
 
-    response = client.chat.completions.create(
-        model=secrets["AZURE_OPENAI_DEPLOYMENT"],
-        temperature=0.3,
-        max_tokens=700,
-        messages=[
-            {
-                "role": "system",
-                "content": (
-                    "あなたはGPS活動データの説明アシスタントです。"
-                    "推定値であることを明記してください。"
-                    "医療診断や健康状態の断定はしないでください。"
-                    "日本語で分かりやすく説明してください。"
-                ),
-            },
-            {
-                "role": "user",
-                "content": (
-                    "次の集計済みデータだけを使って、"
-                    "活動量、移動手段、行動パターンを説明してください。"
-                    "GPS座標や個人情報は含まれていません。\n"
-                    f"{dict(summary)}"
-                ),
-            },
-        ],
-    )
-
-    return (
-        response.choices[0].message.content
-        or "AIから要約が返されませんでした。"
-    )
+   response = client.chat.completions.create(
+    model=secrets["AZURE_OPENAI_DEPLOYMENT"],
+    max_completion_tokens=700,
+    temperature=1.0,
+    messages=[
+        # 現在のmessages
+    ],
+)
