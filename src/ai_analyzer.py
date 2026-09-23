@@ -5,6 +5,12 @@ from __future__ import annotations
 from collections.abc import Mapping
 
 
+# Azure OpenAI の接続設定。APIキーはStreamlit Secretsで管理する。
+DEFAULT_AZURE_OPENAI_ENDPOINT = "https://gps-activity.openai.azure.com/"
+DEFAULT_AZURE_OPENAI_DEPLOYMENT = "gpt-4.1-mini"
+DEFAULT_AZURE_OPENAI_API_VERSION = "2024-12-01-preview"
+
+
 def summarize_for_ai(
     frame,
     summary: Mapping[str, object],
@@ -68,15 +74,37 @@ def generate_activity_summary(
         azure_endpoint=secrets["AZURE_OPENAI_ENDPOINT"],
         api_version=secrets.get(
             "AZURE_OPENAI_API_VERSION",
-            "2024-10-21",
+            DEFAULT_AZURE_OPENAI_API_VERSION,
         ),
     )
 
-   response = client.chat.completions.create(
-    model=secrets["AZURE_OPENAI_DEPLOYMENT"],
-    max_completion_tokens=700,
-    temperature=1.0,
-    messages=[
-        # 現在のmessages
-    ],
-)
+    response = client.chat.completions.create(
+        model=secrets["AZURE_OPENAI_DEPLOYMENT"],
+        max_completion_tokens=700,
+        temperature=1.0,
+        messages=[
+            {
+                "role": "system",
+                "content": (
+                    "あなたはGPS活動データの説明アシスタントです。"
+                    "推定値であることを明記してください。"
+                    "医療診断や健康状態の断定はしないでください。"
+                    "日本語で分かりやすく説明してください。"
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    "次の集計済みデータだけを使って、"
+                    "活動量、移動手段、行動パターンを説明してください。"
+                    "GPS座標や個人情報は含まれていません。\n"
+                    f"{dict(summary)}"
+                ),
+            },
+        ],
+    )
+
+    return (
+        response.choices[0].message.content
+        or "AIから要約が返されませんでした。"
+    )
