@@ -13,9 +13,7 @@ from src.ai_analyzer import (
     summarize_for_ai,
 )
 from src.device_sync import (
-    GarminParser,
-    GoogleFitParser,
-    HealthKitParser,
+    DeviceParserFactory,
     convert_device_activities_to_gps_format,
 )
 from src.gps_processor import prepare_gps_data
@@ -30,7 +28,7 @@ st.set_page_config(
 
 st.title("🗺️ GPS Activity Analyzer")
 st.write(
-    "Google Maps Timeline、iPhone HealthKit、Android Google Fit、"
+    "Google Maps Timeline、iPhone HealthKit（JSON/XML）、Android Google Fit、"
     "Garminウォッチから運動量データを分析し、"
     "Azure OpenAIで活動内容を要約します。"
 )
@@ -89,8 +87,8 @@ with st.sidebar:
             )
         elif data_source == "iPhone HealthKit":
             uploaded_file = st.file_uploader(
-                "HealthKit JSONをアップロード",
-                type=["json"],
+                "HealthKit JSON/XMLをアップロード",
+                type=["json", "xml"],
                 key="healthkit_upload",
             )
         elif data_source == "Android Google Fit":
@@ -148,12 +146,17 @@ try:
         parsed_data = parse_timeline_json(payload)
 
     elif data_source == "iPhone HealthKit":
-        payload = json.loads(
-            uploaded_file.read().decode("utf-8")
-        )
-        activities = HealthKitParser.parse_export_json(
-            payload
-        )
+        file_content = uploaded_file.read().decode("utf-8")
+        
+        # JSON/XML自動判別
+        try:
+            payload = json.loads(file_content)
+        except json.JSONDecodeError:
+            # XMLと推定
+            payload = file_content
+        
+        parser = DeviceParserFactory.get_parser("healthkit")
+        activities = parser.parse_export(payload)
         converted = convert_device_activities_to_gps_format(
             activities
         )
@@ -163,9 +166,8 @@ try:
         payload = json.loads(
             uploaded_file.read().decode("utf-8")
         )
-        activities = GoogleFitParser.parse_export_json(
-            payload
-        )
+        parser = DeviceParserFactory.get_parser("googlefit")
+        activities = parser.parse_export(payload)
         converted = convert_device_activities_to_gps_format(
             activities
         )
@@ -173,9 +175,8 @@ try:
 
     elif data_source == "Garmin":
         csv_content = uploaded_file.read().decode("utf-8")
-        activities = GarminParser.parse_export_csv(
-            csv_content
-        )
+        parser = DeviceParserFactory.get_parser("garmin")
+        activities = parser.parse_export(csv_content)
         converted = convert_device_activities_to_gps_format(
             activities
         )
@@ -384,7 +385,7 @@ with st.expander("ℹ️ 注意事項・推定値について"):
         """
         ### データソースについて
         - **Google Maps Timeline**: GPS座標から算出
-        - **iPhone HealthKit**: Workoutデータから算出
+        - **iPhone HealthKit**: Workoutデータから算出（JSON/XML両対応）
         - **Android Google Fit**: Fitアクティビティから算出
         - **Garmin**: スマートウォッチセンサーから算出
 
@@ -401,8 +402,8 @@ with st.expander("ℹ️ 注意事項・推定値について"):
 
         ### 対応フォーマット
         - **Google Maps Timeline**: JSON形式
-        - **iPhone HealthKit**: HealthKitエクスポートJSON
+        - **iPhone HealthKit**: JSON形式またはXML形式（自動判別）
         - **Android Google Fit**: Google FitエクスポートJSON
-        - **Garmin**: CSVエクスポート（日付、活動種別、距離、時間、カロリー）
+        - **Garmin**: CSVエクスポート（列名の順序や言語は自動検出）
         """
     )
