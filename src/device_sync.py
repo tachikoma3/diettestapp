@@ -1,4 +1,3 @@
-```python
 """iPhone、Android、スマートウォッチから運動量データを取得."""
 
 from __future__ import annotations
@@ -1542,4 +1541,4 @@ def convert_device_activities_to_gps_format(
     return {
         "timelineObjects": timeline_items
     }
-```
+
