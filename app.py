@@ -125,7 +125,7 @@ with st.sidebar:
     )
 
 
-```python
+
 # ========== データ読み込み処理 ==========
 
 if uploaded_file is None and not use_sample:
