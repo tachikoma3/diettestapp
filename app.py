@@ -83,24 +83,24 @@ with st.sidebar:
         if data_source == "Google Maps Timeline":
             uploaded_file = st.file_uploader(
                 "Timeline JSONをアップロード",
-                type=["json"],
+                type=["json", "txt"],
             )
         elif data_source == "iPhone HealthKit":
             uploaded_file = st.file_uploader(
                 "HealthKit JSON/XMLをアップロード",
-                type=["json", "xml"],
+                type=["json", "xml", "txt" ],
                 key="healthkit_upload",
             )
         elif data_source == "Android Google Fit":
             uploaded_file = st.file_uploader(
                 "Google Fit JSONをアップロード",
-                type=["json"],
+                type=["json", "txt"],
                 key="googlefit_upload",
             )
         elif data_source == "Garmin":
             uploaded_file = st.file_uploader(
                 "Garmin CSVをアップロード",
-                type=["csv"],
+                type=["csv", "txt"],
                 key="garmin_upload",
             )
 
@@ -125,7 +125,9 @@ with st.sidebar:
     )
 
 
+```python
 # ========== データ読み込み処理 ==========
+
 if uploaded_file is None and not use_sample:
     st.info(
         f"📤 {data_source} のファイルをアップロードするか、"
@@ -136,51 +138,103 @@ if uploaded_file is None and not use_sample:
 
 try:
     if use_sample:
+        # --------------------------------------------------
+        # サンプルデータを読み込む
+        # --------------------------------------------------
         payload = load_sample_data()
         parsed_data = parse_timeline_json(payload)
 
     elif data_source == "Google Maps Timeline":
-        payload = json.loads(
-            uploaded_file.read().decode("utf-8")
-        )
+        # --------------------------------------------------
+        # Google Maps Timeline
+        #
+        # JSON / TXT に対応。
+        # TXTでも中身がJSON形式なら自動的にJSONとして解析する。
+        # --------------------------------------------------
+        file_content = uploaded_file.read().decode("utf-8")
+
+        try:
+            # JSONとして解析
+            payload = json.loads(file_content)
+
+        except json.JSONDecodeError:
+            # JSONとして解析できない場合は
+            # テキストとしてそのまま渡す
+            payload = file_content
+
         parsed_data = parse_timeline_json(payload)
 
     elif data_source == "iPhone HealthKit":
-        file_content = uploaded_file.read().decode("utf-8")
-        
-        # JSON/XML自動判別
-        try:
-            payload = json.loads(file_content)
-        except json.JSONDecodeError:
-            # XMLと推定
-            payload = file_content
-        
+        # --------------------------------------------------
+        # Apple Health / HealthKit
+        #
+        # export.xml に対応。
+        #
+        # Apple HealthのエクスポートデータはXML形式のため、
+        # JSONとして解析せず、そのままHealthKitパーサーへ渡す。
+        #
+        # TXTとして保存されたXMLデータにも対応するため、
+        # 拡張子ではなくファイル内容をそのまま読み込む。
+        # --------------------------------------------------
+        file_content = uploaded_file.read()
+
         parser = DeviceParserFactory.get_parser("healthkit")
-        activities = parser.parse_export(payload)
+
+        # HealthKit XMLを解析
+        activities = parser.parse_export(file_content)
+
+        # アプリ内部で使用するGPS形式へ変換
         converted = convert_device_activities_to_gps_format(
             activities
         )
+
+        # 共通データ形式へ変換
         parsed_data = parse_timeline_json(converted)
 
     elif data_source == "Android Google Fit":
-        payload = json.loads(
-            uploaded_file.read().decode("utf-8")
-        )
+        # --------------------------------------------------
+        # Android Google Fit
+        #
+        # JSON / TXT に対応。
+        # --------------------------------------------------
+        file_content = uploaded_file.read().decode("utf-8")
+
+        try:
+            # JSONとして解析
+            payload = json.loads(file_content)
+
+        except json.JSONDecodeError:
+            # JSONではない場合はテキストとして保持
+            payload = file_content
+
         parser = DeviceParserFactory.get_parser("googlefit")
+
         activities = parser.parse_export(payload)
+
         converted = convert_device_activities_to_gps_format(
             activities
         )
+
         parsed_data = parse_timeline_json(converted)
 
     elif data_source == "Garmin":
-        csv_content = uploaded_file.read().decode("utf-8")
+        # --------------------------------------------------
+        # Garmin
+        #
+        # CSV / TXT に対応。
+        # --------------------------------------------------
+        file_content = uploaded_file.read().decode("utf-8")
+
         parser = DeviceParserFactory.get_parser("garmin")
-        activities = parser.parse_export(csv_content)
+
+        activities = parser.parse_export(file_content)
+
         converted = convert_device_activities_to_gps_format(
             activities
         )
+
         parsed_data = parse_timeline_json(converted)
+
 
 except (
     json.JSONDecodeError,
@@ -189,15 +243,25 @@ except (
     ValueError,
     FileNotFoundError,
 ) as error:
+
+    # --------------------------------------------------
+    # ファイル読み込みエラー
+    # --------------------------------------------------
     st.error(
         f"❌ {data_source} の読み込みに失敗しました。"
         "ファイル形式を確認してください。"
     )
+
     st.code(str(error))
     st.stop()
 
 
+# ========== GPSデータ準備 ==========
+
 data = prepare_gps_data(parsed_data)
+
+
+# ========== データ存在チェック ==========
 
 if data.empty:
     st.warning(
@@ -207,9 +271,14 @@ if data.empty:
     st.stop()
 
 
+# ========== 利用可能な日付を取得 ==========
+
 available_dates = sorted(
     data["date"].dropna().unique()
 )
+
+
+# ========== 分析対象日を選択 ==========
 
 selected_date = st.selectbox(
     "分析対象日",
@@ -217,15 +286,22 @@ selected_date = st.selectbox(
     format_func=str,
 )
 
+
+# ========== 選択日のデータを抽出 ==========
+
 day_data = data[
     data["date"] == selected_date
 ].copy()
+
+
+# ========== 1日のデータを分析 ==========
 
 summary = analyze_day(
     day_data,
     stride_m=stride_m,
     weight_kg=weight_kg,
 )
+```
 
 
 # ========== KPI表示 ==========
