@@ -12,6 +12,12 @@ from src.ai_analyzer import (
     generate_activity_summary,
     summarize_for_ai,
 )
+from src.device_sync import (
+    GarminParser,
+    GoogleFitParser,
+    HealthKitParser,
+    convert_device_activities_to_gps_format,
+)
 from src.gps_processor import prepare_gps_data
 from src.parser import parse_timeline_json
 
@@ -24,44 +30,15 @@ st.set_page_config(
 
 st.title("🗺️ GPS Activity Analyzer")
 st.write(
-    "Google Maps TimelineをPythonで分析し、"
+    "Google Maps Timeline、iPhone HealthKit、Android Google Fit、"
+    "Garminウォッチから運動量データを分析し、"
     "Azure OpenAIで活動内容を要約します。"
 )
 
 st.caption(
-    "個人GPSデータはセッション内で処理し、"
+    "個人データはセッション内で処理し、"
     "GitHubへ保存しません。"
 )
-
-
-with st.sidebar:
-    st.header("入力と設定")
-
-    uploaded_file = st.file_uploader(
-        "Timeline JSONをアップロード",
-        type=["json"],
-    )
-
-    use_sample = st.checkbox(
-        "架空のサンプルデータを使う",
-        value=uploaded_file is None,
-    )
-
-    stride_m = st.number_input(
-        "歩幅（m）",
-        min_value=0.30,
-        max_value=1.50,
-        value=0.70,
-        step=0.01,
-    )
-
-    weight_kg = st.number_input(
-        "体重（kg）",
-        min_value=20.0,
-        max_value=200.0,
-        value=65.0,
-        step=0.5,
-    )
 
 
 def load_sample_data():
@@ -82,9 +59,78 @@ def load_sample_data():
     )
 
 
+# ========== サイドバー設定 ==========
+with st.sidebar:
+    st.header("📁 入力と設定")
+
+    # データソース選択
+    data_source = st.radio(
+        "データソースを選択",
+        [
+            "Google Maps Timeline",
+            "iPhone HealthKit",
+            "Android Google Fit",
+            "Garmin",
+            "サンプルデータ",
+        ],
+        index=0,
+    )
+
+    uploaded_file = None
+    use_sample = False
+
+    if data_source == "サンプルデータ":
+        use_sample = True
+    else:
+        if data_source == "Google Maps Timeline":
+            uploaded_file = st.file_uploader(
+                "Timeline JSONをアップロード",
+                type=["json"],
+            )
+        elif data_source == "iPhone HealthKit":
+            uploaded_file = st.file_uploader(
+                "HealthKit JSONをアップロード",
+                type=["json"],
+                key="healthkit_upload",
+            )
+        elif data_source == "Android Google Fit":
+            uploaded_file = st.file_uploader(
+                "Google Fit JSONをアップロード",
+                type=["json"],
+                key="googlefit_upload",
+            )
+        elif data_source == "Garmin":
+            uploaded_file = st.file_uploader(
+                "Garmin CSVをアップロード",
+                type=["csv"],
+                key="garmin_upload",
+            )
+
+    st.divider()
+
+    st.subheader("⚙️ 個人設定")
+
+    stride_m = st.number_input(
+        "歩幅（m）",
+        min_value=0.30,
+        max_value=1.50,
+        value=0.70,
+        step=0.01,
+    )
+
+    weight_kg = st.number_input(
+        "体重（kg）",
+        min_value=20.0,
+        max_value=200.0,
+        value=65.0,
+        step=0.5,
+    )
+
+
+# ========== データ読み込み処理 ==========
 if uploaded_file is None and not use_sample:
     st.info(
-        "JSONをアップロードするか、"
+        f"📤 {data_source} のファイルをアップロードするか、"
         "サンプルデータを選択してください。"
     )
     st.stop()
@@ -93,10 +139,47 @@ if uploaded_file is None and not use_sample:
 try:
     if use_sample:
         payload = load_sample_data()
-    else:
-        payload = uploaded_file.read()
+        parsed_data = parse_timeline_json(payload)
 
-    parsed_data = parse_timeline_json(payload)
+    elif data_source == "Google Maps Timeline":
+        payload = json.loads(
+            uploaded_file.read().decode("utf-8")
+        )
+        parsed_data = parse_timeline_json(payload)
+
+    elif data_source == "iPhone HealthKit":
+        payload = json.loads(
+            uploaded_file.read().decode("utf-8")
+        )
+        activities = HealthKitParser.parse_export_json(
+            payload
+        )
+        converted = convert_device_activities_to_gps_format(
+            activities
+        )
+        parsed_data = parse_timeline_json(converted)
+
+    elif data_source == "Android Google Fit":
+        payload = json.loads(
+            uploaded_file.read().decode("utf-8")
+        )
+        activities = GoogleFitParser.parse_export_json(
+            payload
+        )
+        converted = convert_device_activities_to_gps_format(
+            activities
+        )
+        parsed_data = parse_timeline_json(converted)
+
+    elif data_source == "Garmin":
+        csv_content = uploaded_file.read().decode("utf-8")
+        activities = GarminParser.parse_export_csv(
+            csv_content
+        )
+        converted = convert_device_activities_to_gps_format(
+            activities
+        )
+        parsed_data = parse_timeline_json(converted)
 
 except (
     json.JSONDecodeError,
@@ -106,8 +189,8 @@ except (
     FileNotFoundError,
 ) as error:
     st.error(
-        "JSONの読み込みに失敗しました。"
-        "Google Maps TimelineのJSON形式を確認してください。"
+        f"❌ {data_source} の読み込みに失敗しました。"
+        "ファイル形式を確認してください。"
     )
     st.code(str(error))
     st.stop()
@@ -117,8 +200,8 @@ data = prepare_gps_data(parsed_data)
 
 if data.empty:
     st.warning(
-        "解析できるGPSデータがありません。"
-        "日時・緯度・経度を含むJSONを選択してください。"
+        "⚠️ 解析できるデータがありません。"
+        "必須項目を含むファイルを選択してください。"
     )
     st.stop()
 
@@ -144,6 +227,7 @@ summary = analyze_day(
 )
 
 
+# ========== KPI表示 ==========
 st.subheader(f"📊 {selected_date} のKPI")
 
 columns = st.columns(5)
@@ -174,15 +258,16 @@ columns[4].metric(
 )
 
 st.caption(
-    "歩数・カロリー・速度はGPSから算出した推定値です。"
+    "ℹ️ 歩数・カロリー・速度はデバイスまたはGPSから算出した推定値です。"
     "実測値や医療情報ではありません。"
 )
 
 
+# ========== グラフ・詳細表示 ==========
 left, right = st.columns([1, 2])
 
 with left:
-    st.subheader("移動手段別集計")
+    st.subheader("🚗 移動手段別集計")
     st.dataframe(
         summary["mode_summary"],
         use_container_width=True,
@@ -190,18 +275,18 @@ with left:
     )
 
     st.write(
-        "単純平均速度: "
+        "📍 単純平均速度: "
         f"{summary['simple_average_speed_kmh']:.2f} km/h"
     )
 
     st.write(
-        "総距離 ÷ 総移動時間: "
+        "⏱️ 総距離 ÷ 総移動時間: "
         f"{summary['average_speed_kmh']:.2f} km/h"
     )
 
 
 with right:
-    st.subheader("移動軌跡マップ")
+    st.subheader("🗺️ 移動軌跡マップ")
 
     from src.visualization import create_map
 
@@ -211,7 +296,8 @@ with right:
     )
 
 
-st.subheader("詳細データ")
+# ========== 詳細データ ==========
+st.subheader("📋 詳細データ")
 
 display_columns = [
     "timestamp",
@@ -245,20 +331,21 @@ csv_data = display_data.to_csv(
 st.download_button(
     "📥 CSVをダウンロード",
     data=csv_data,
-    file_name=f"gps_activity_{selected_date}.csv",
+    file_name=f"activity_{selected_date}.csv",
     mime="text/csv",
 )
 
 
+# ========== AI活動分析 ==========
 st.subheader("🤖 AI活動分析（Azure OpenAI）")
 
 st.write(
-    "GPS座標そのものではなく、"
+    "GPS座標やデバイス生データではなく、"
     "距離・時間・速度・移動手段などの"
-    "集計値だけをAzure OpenAIへ送信します。"
+    "**集計値のみ** をAzure OpenAIへ送信します。"
 )
 
-if st.button("AI活動分析を実行", type="primary"):
+if st.button("🚀 AI活動分析を実行", type="primary"):
     try:
         secret_values = {
             key: st.secrets[key]
@@ -285,19 +372,37 @@ if st.button("AI活動分析を実行", type="primary"):
 
     except Exception as error:
         st.error(
-            "Azure OpenAIの利用に失敗しました。"
+            "❌ Azure OpenAIの利用に失敗しました。"
             "Secretsの設定を確認してください。"
         )
         st.code(str(error))
 
 
-with st.expander("注意事項・推定値について"):
+# ========== 注意事項 ==========
+with st.expander("ℹ️ 注意事項・推定値について"):
     st.markdown(
         """
-        - 推定歩数は歩行距離 ÷ 歩幅で算出しています。
-        - 推定消費カロリーはMETs、体重、時間から算出しています。
-        - 推定値は参考情報であり、実測値ではありません。
-        - 医療診断や健康状態の判定には使用しません。
-        - APIキーはソースコードに書かず、Streamlit Secretsで管理してください。
+        ### データソースについて
+        - **Google Maps Timeline**: GPS座標から算出
+        - **iPhone HealthKit**: Workoutデータから算出
+        - **Android Google Fit**: Fitアクティビティから算出
+        - **Garmin**: スマートウォッチセンサーから算出
+
+        ### 推定値について
+        - 推定歩数は歩行距離 ÷ 歩幅で算出しています
+        - 推定消費カロリーはMETs、体重、時間から算出しています
+        - 推定値は参考情報であり、実測値ではありません
+        - 医療診断や健康状態の判定には使用しません
+
+        ### プライバシー
+        - アップロードしたデータはセッション内で処理されます
+        - GitHubリポジトリには保存されません
+        - APIキーはソースコードに書かず、Streamlit Secretsで管理してください
+
+        ### 対応フォーマット
+        - **Google Maps Timeline**: JSON形式
+        - **iPhone HealthKit**: HealthKitエクスポートJSON
+        - **Android Google Fit**: Google FitエクスポートJSON
+        - **Garmin**: CSVエクスポート（日付、活動種別、距離、時間、カロリー）
         """
     )
