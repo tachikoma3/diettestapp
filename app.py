@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import json
 from pathlib import Path
 
@@ -18,7 +19,9 @@ from src.device_sync import (
 )
 from src.gps_processor import prepare_gps_data
 from src.parser import parse_timeline_json
-
+from src.file_loader import load_upload, require_kind
+from src.healthkit_daily import parse_healthkit_daily
+from src.daily_view import render_daily_dashboard
 
 st.set_page_config(
     page_title="GPS Activity Analyzer",
@@ -80,29 +83,11 @@ with st.sidebar:
     if data_source == "サンプルデータ":
         use_sample = True
     else:
-        if data_source == "Google Maps Timeline":
-            uploaded_file = st.file_uploader(
-                "Timeline JSONをアップロード",
-                type=["json", "txt"],
-            )
-        elif data_source == "iPhone HealthKit":
-            uploaded_file = st.file_uploader(
-                "HealthKit JSON/XMLをアップロード",
-                type=["json", "xml", "txt" ],
-                key="healthkit_upload",
-            )
-        elif data_source == "Android Google Fit":
-            uploaded_file = st.file_uploader(
-                "Google Fit JSONをアップロード",
-                type=["json", "txt"],
-                key="googlefit_upload",
-            )
-        elif data_source == "Garmin":
-            uploaded_file = st.file_uploader(
-                "Garmin CSVをアップロード",
-                type=["csv", "txt"],
-                key="garmin_upload",
-            )
+    uploaded_file = st.file_uploader(
+        f"{data_source} のファイルをアップロード",
+        type=["json", "xml", "csv", "txt"],
+        key=f"upload_{data_source}",
+    )
 
     st.divider()
 
@@ -135,7 +120,45 @@ if uploaded_file is None and not use_sample:
     )
     st.stop()
 
+daily = None
+try:
+     if use_sample:
+        payload = load_sample_data()
+        parsed_data = parse_timeline_json(payload)
+    else:
+        loaded = load_upload(uploaded_file)
 
+        if data_source == "Google Maps Timeline":
+            require_kind(loaded, data_source, "json")
+            parsed_data = parse_timeline_json(loaded.payload)
+
+        elif data_source == "iPhone HealthKit":
+            require_kind(loaded, data_source, "xml", "json")
+            if loaded.kind == "xml":
+                daily = parse_healthkit_daily(io.BytesIO(loaded.raw))
+                parsed_data = None
+            else:
+                parser = DeviceParserFactory.get_parser("healthkit")
+                activities = parser.parse_export(loaded.raw)
+                parsed_data = parse_timeline_json(
+                    convert_device_activities_to_gps_format(activities)
+                )
+
+        elif data_source == "Android Google Fit":
+            require_kind(loaded, data_source, "json")
+            parser = DeviceParserFactory.get_parser("googlefit")
+            activities = parser.parse_export(loaded.payload)
+            parsed_data = parse_timeline_json(
+                convert_device_activities_to_gps_format(activities)
+            )
+
+        elif data_source == "Garmin":
+            require_kind(loaded, data_source, "csv")
+            parser = DeviceParserFactory.get_parser("garmin")
+            activities = parser.parse_export(loaded.text)
+            parsed_data = parse_timeline_json(
+                convert_device_activities_to_gps_format(activities)
+            )
 try:
     if use_sample:
         # --------------------------------------------------
@@ -235,6 +258,7 @@ try:
 
         parsed_data = parse_timeline_json(converted)
 
+import xml.etree.ElementTree as ET
 
 except (
     json.JSONDecodeError,
@@ -242,6 +266,7 @@ except (
     TypeError,
     ValueError,
     FileNotFoundError,
+    ET.ParseError, 
 ) as error:
 
     # --------------------------------------------------
@@ -258,6 +283,9 @@ except (
 
 # ========== GPSデータ準備 ==========
 
+if daily is not None:
+    render_daily_dashboard(daily)
+    st.stop()
 data = prepare_gps_data(parsed_data)
 
 
