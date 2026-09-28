@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import json
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import streamlit as st
@@ -13,15 +14,16 @@ from src.ai_analyzer import (
     generate_activity_summary,
     summarize_for_ai,
 )
+from src.daily_view import render_daily_dashboard
 from src.device_sync import (
     DeviceParserFactory,
     convert_device_activities_to_gps_format,
 )
-from src.gps_processor import prepare_gps_data
-from src.parser import parse_timeline_json
 from src.file_loader import load_upload, require_kind
+from src.gps_processor import prepare_gps_data
 from src.healthkit_daily import parse_healthkit_daily
-from src.daily_view import render_daily_dashboard
+from src.parser import parse_timeline_json
+from src.visualization import create_map
 
 st.set_page_config(
     page_title="GPS Activity Analyzer",
@@ -30,6 +32,7 @@ st.set_page_config(
 )
 
 st.title("🗺️ GPS Activity Analyzer")
+
 st.write(
     "Google Maps Timeline、iPhone HealthKit（JSON/XML）、Android Google Fit、"
     "Garminウォッチから運動量データを分析し、"
@@ -44,20 +47,14 @@ st.caption(
 
 def load_sample_data():
     """架空サンプルJSONを読み込む."""
-    path = (
-        Path(__file__).parent
-        / "data"
-        / "sample_timeline.json"
-    )
+    path = Path(__file__).parent / "data" / "sample_timeline.json"
 
     if not path.exists():
         raise FileNotFoundError(
             "data/sample_timeline.jsonが見つかりません。"
         )
 
-    return json.loads(
-        path.read_text(encoding="utf-8")
-    )
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
 # ========== サイドバー設定 ==========
@@ -83,14 +80,15 @@ with st.sidebar:
     if data_source == "サンプルデータ":
         use_sample = True
     else:
-    uploaded_file = st.file_uploader(
-        f"{data_source} のファイルをアップロード",
-        type=["json", "xml", "csv", "txt"],
-        key=f"upload_{data_source}",
-    )
+        # 拡張子ではなく中身で形式を判定するため、全ソース共通で
+        # json / xml / csv / txt を受け付ける。
+        uploaded_file = st.file_uploader(
+            f"{data_source} のファイルをアップロード",
+            type=["json", "xml", "csv", "txt"],
+            key=f"upload_{data_source}",
+        )
 
     st.divider()
-
     st.subheader("⚙️ 個人設定")
 
     stride_m = st.number_input(
@@ -109,10 +107,7 @@ with st.sidebar:
         step=0.5,
     )
 
-
-
 # ========== データ読み込み処理 ==========
-
 if uploaded_file is None and not use_sample:
     st.info(
         f"📤 {data_source} のファイルをアップロードするか、"
@@ -120,12 +115,18 @@ if uploaded_file is None and not use_sample:
     )
     st.stop()
 
+# 日別集計モード(GPS座標を持たないHealthKit XML)の結果を入れる
 daily = None
+
 try:
-     if use_sample:
+    if use_sample:
+        # サンプルデータ
         payload = load_sample_data()
         parsed_data = parse_timeline_json(payload)
+
     else:
+        # 形式(json / xml / csv)は拡張子ではなく内容から判定する。
+        # TXTで保存されたJSON・XML・CSVもここで正しく扱われる。
         loaded = load_upload(uploaded_file)
 
         if data_source == "Google Maps Timeline":
@@ -134,7 +135,10 @@ try:
 
         elif data_source == "iPhone HealthKit":
             require_kind(loaded, data_source, "xml", "json")
+
             if loaded.kind == "xml":
+                # export.xml は Workout / GPSルートを含まないことがあるため、
+                # Record(歩数・距離・活動エネルギー等)を日別に集計する。
                 daily = parse_healthkit_daily(io.BytesIO(loaded.raw))
                 parsed_data = None
             else:
@@ -159,106 +163,6 @@ try:
             parsed_data = parse_timeline_json(
                 convert_device_activities_to_gps_format(activities)
             )
-try:
-    if use_sample:
-        # --------------------------------------------------
-        # サンプルデータを読み込む
-        # --------------------------------------------------
-        payload = load_sample_data()
-        parsed_data = parse_timeline_json(payload)
-
-    elif data_source == "Google Maps Timeline":
-        # --------------------------------------------------
-        # Google Maps Timeline
-        #
-        # JSON / TXT に対応。
-        # TXTでも中身がJSON形式なら自動的にJSONとして解析する。
-        # --------------------------------------------------
-        file_content = uploaded_file.read().decode("utf-8")
-
-        try:
-            # JSONとして解析
-            payload = json.loads(file_content)
-
-        except json.JSONDecodeError:
-            # JSONとして解析できない場合は
-            # テキストとしてそのまま渡す
-            payload = file_content
-
-        parsed_data = parse_timeline_json(payload)
-
-    elif data_source == "iPhone HealthKit":
-        # --------------------------------------------------
-        # Apple Health / HealthKit
-        #
-        # export.xml に対応。
-        #
-        # Apple HealthのエクスポートデータはXML形式のため、
-        # JSONとして解析せず、そのままHealthKitパーサーへ渡す。
-        #
-        # TXTとして保存されたXMLデータにも対応するため、
-        # 拡張子ではなくファイル内容をそのまま読み込む。
-        # --------------------------------------------------
-        file_content = uploaded_file.read()
-
-        parser = DeviceParserFactory.get_parser("healthkit")
-
-        # HealthKit XMLを解析
-        activities = parser.parse_export(file_content)
-
-        # アプリ内部で使用するGPS形式へ変換
-        converted = convert_device_activities_to_gps_format(
-            activities
-        )
-
-        # 共通データ形式へ変換
-        parsed_data = parse_timeline_json(converted)
-
-    elif data_source == "Android Google Fit":
-        # --------------------------------------------------
-        # Android Google Fit
-        #
-        # JSON / TXT に対応。
-        # --------------------------------------------------
-        file_content = uploaded_file.read().decode("utf-8")
-
-        try:
-            # JSONとして解析
-            payload = json.loads(file_content)
-
-        except json.JSONDecodeError:
-            # JSONではない場合はテキストとして保持
-            payload = file_content
-
-        parser = DeviceParserFactory.get_parser("googlefit")
-
-        activities = parser.parse_export(payload)
-
-        converted = convert_device_activities_to_gps_format(
-            activities
-        )
-
-        parsed_data = parse_timeline_json(converted)
-
-    elif data_source == "Garmin":
-        # --------------------------------------------------
-        # Garmin
-        #
-        # CSV / TXT に対応。
-        # --------------------------------------------------
-        file_content = uploaded_file.read().decode("utf-8")
-
-        parser = DeviceParserFactory.get_parser("garmin")
-
-        activities = parser.parse_export(file_content)
-
-        converted = convert_device_activities_to_gps_format(
-            activities
-        )
-
-        parsed_data = parse_timeline_json(converted)
-
-import xml.etree.ElementTree as ET
 
 except (
     json.JSONDecodeError,
@@ -266,31 +170,26 @@ except (
     TypeError,
     ValueError,
     FileNotFoundError,
-    ET.ParseError, 
+    ET.ParseError,
 ) as error:
-
-    # --------------------------------------------------
     # ファイル読み込みエラー
-    # --------------------------------------------------
     st.error(
         f"❌ {data_source} の読み込みに失敗しました。"
         "ファイル形式を確認してください。"
     )
-
     st.code(str(error))
     st.stop()
 
-
-# ========== GPSデータ準備 ==========
-
+# ========== 日別集計モード(HealthKit XML) ==========
 if daily is not None:
+    st.subheader("📅 日別アクティビティ(HealthKit)")
     render_daily_dashboard(daily)
     st.stop()
+
+# ========== GPSデータ準備 ==========
 data = prepare_gps_data(parsed_data)
 
-
 # ========== データ存在チェック ==========
-
 if data.empty:
     st.warning(
         "⚠️ 解析できるデータがありません。"
@@ -298,39 +197,25 @@ if data.empty:
     )
     st.stop()
 
-
 # ========== 利用可能な日付を取得 ==========
-
-available_dates = sorted(
-    data["date"].dropna().unique()
-)
-
+available_dates = sorted(data["date"].dropna().unique())
 
 # ========== 分析対象日を選択 ==========
-
 selected_date = st.selectbox(
     "分析対象日",
     available_dates,
     format_func=str,
 )
 
-
 # ========== 選択日のデータを抽出 ==========
-
-day_data = data[
-    data["date"] == selected_date
-].copy()
-
+day_data = data[data["date"] == selected_date].copy()
 
 # ========== 1日のデータを分析 ==========
-
 summary = analyze_day(
     day_data,
     stride_m=stride_m,
     weight_kg=weight_kg,
 )
-
-
 
 # ========== KPI表示 ==========
 st.subheader(f"📊 {selected_date} のKPI")
@@ -341,22 +226,18 @@ columns[0].metric(
     "推定歩数",
     f"{summary['estimated_steps']:,.0f} 歩",
 )
-
 columns[1].metric(
     "総移動距離",
     f"{summary['total_distance_km']:.2f} km",
 )
-
 columns[2].metric(
     "平均移動速度",
     f"{summary['average_speed_kmh']:.2f} km/h",
 )
-
 columns[3].metric(
     "推定消費カロリー",
     f"{summary['estimated_calories_kcal']:.0f} kcal",
 )
-
 columns[4].metric(
     "移動時間",
     f"{summary['moving_minutes']:.1f} 分",
@@ -367,12 +248,12 @@ st.caption(
     "実測値や医療情報ではありません。"
 )
 
-
 # ========== グラフ・詳細表示 ==========
 left, right = st.columns([1, 2])
 
 with left:
     st.subheader("🚗 移動手段別集計")
+
     st.dataframe(
         summary["mode_summary"],
         use_container_width=True,
@@ -383,23 +264,18 @@ with left:
         "📍 単純平均速度: "
         f"{summary['simple_average_speed_kmh']:.2f} km/h"
     )
-
     st.write(
         "⏱️ 総距離 ÷ 総移動時間: "
         f"{summary['average_speed_kmh']:.2f} km/h"
     )
 
-
 with right:
     st.subheader("🗺️ 移動軌跡マップ")
-
-    from src.visualization import create_map
 
     st.pydeck_chart(
         create_map(day_data),
         use_container_width=True,
     )
-
 
 # ========== 詳細データ ==========
 st.subheader("📋 詳細データ")
@@ -415,11 +291,7 @@ display_columns = [
 ]
 
 display_data = day_data[
-    [
-        column
-        for column in display_columns
-        if column in day_data.columns
-    ]
+    [column for column in display_columns if column in day_data.columns]
 ]
 
 st.dataframe(
@@ -428,10 +300,7 @@ st.dataframe(
     hide_index=True,
 )
 
-
-csv_data = display_data.to_csv(
-    index=False
-).encode("utf-8-sig")
+csv_data = display_data.to_csv(index=False).encode("utf-8-sig")
 
 st.download_button(
     "📥 CSVをダウンロード",
@@ -439,7 +308,6 @@ st.download_button(
     file_name=f"activity_{selected_date}.csv",
     mime="text/csv",
 )
-
 
 # ========== AI活動分析 ==========
 st.subheader("🤖 AI活動分析（Azure OpenAI）")
@@ -463,15 +331,8 @@ if st.button("🚀 AI活動分析を実行", type="primary"):
             if key in st.secrets
         }
 
-        ai_summary = summarize_for_ai(
-            day_data,
-            summary,
-        )
-
-        result = generate_activity_summary(
-            ai_summary,
-            secret_values,
-        )
+        ai_summary = summarize_for_ai(day_data, summary)
+        result = generate_activity_summary(ai_summary, secret_values)
 
         st.markdown(result)
 
@@ -482,32 +343,39 @@ if st.button("🚀 AI活動分析を実行", type="primary"):
         )
         st.code(str(error))
 
-
 # ========== 注意事項 ==========
 with st.expander("ℹ️ 注意事項・推定値について"):
     st.markdown(
         """
-        ### データソースについて
-        - **Google Maps Timeline**: GPS座標から算出
-        - **iPhone HealthKit**: Workoutデータから算出（JSON/XML両対応）
-        - **Android Google Fit**: Fitアクティビティから算出
-        - **Garmin**: スマートウォッチセンサーから算出
+### データソースについて
 
-        ### 推定値について
-        - 推定歩数は歩行距離 ÷ 歩幅で算出しています
-        - 推定消費カロリーはMETs、体重、時間から算出しています
-        - 推定値は参考情報であり、実測値ではありません
-        - 医療診断や健康状態の判定には使用しません
+- **Google Maps Timeline**: GPS座標から算出
+- **iPhone HealthKit**: XML(export.xml)は歩数・距離・活動エネルギーなどの
+  記録を日別に集計 / JSONはWorkoutデータから算出
+- **Android Google Fit**: Fitアクティビティから算出
+- **Garmin**: スマートウォッチセンサーから算出
 
-        ### プライバシー
-        - アップロードしたデータはセッション内で処理されます
-        - GitHubリポジトリには保存されません
-        - APIキーはソースコードに書かず、Streamlit Secretsで管理してください
+### 推定値について
 
-        ### 対応フォーマット
-        - **Google Maps Timeline**: JSON形式
-        - **iPhone HealthKit**: JSON形式またはXML形式（自動判別）
-        - **Android Google Fit**: Google FitエクスポートJSON
-        - **Garmin**: CSVエクスポート（列名の順序や言語は自動検出）
-        """
+- 推定歩数は歩行距離 ÷ 歩幅で算出しています
+- 推定消費カロリーはMETs、体重、時間から算出しています
+- 推定値は参考情報であり、実測値ではありません
+- 医療診断や健康状態の判定には使用しません
+- HealthKit XMLの日別集計では、複数デバイスの記録が重なる日は
+  合計値が最大のソースを採用しています(二重計上を避ける近似)
+
+### プライバシー
+
+- アップロードしたデータはセッション内で処理されます
+- GitHubリポジトリには保存されません
+- APIキーはソースコードに書かず、Streamlit Secretsで管理してください
+
+### 対応フォーマット
+
+- ファイルの形式は拡張子ではなく中身で判定します(.txt でもOK)
+- **Google Maps Timeline**: JSON形式
+- **iPhone HealthKit**: XML形式(日別集計)またはJSON形式
+- **Android Google Fit**: Google FitエクスポートJSON
+- **Garmin**: CSVエクスポート(列名の順序や言語は自動検出)
+"""
     )
