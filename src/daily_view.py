@@ -11,6 +11,16 @@ from datetime import timedelta
 import pandas as pd
 import streamlit as st
 
+from src.daily_ai import generate_daily_summary, summarize_daily_for_ai
+
+_MAX_AI_CALLS_PER_SESSION = 5
+_SECRET_KEYS = (
+    "AZURE_OPENAI_API_KEY",
+    "AZURE_OPENAI_ENDPOINT",
+    "AZURE_OPENAI_DEPLOYMENT",
+    "AZURE_OPENAI_API_VERSION",
+)
+
 _LABELS = {
     "steps": "歩数",
     "distance_km": "距離 (km)",
@@ -21,6 +31,65 @@ _LABELS = {
     "exercise_min": "運動時間 (分)",
     "stand_hours": "スタンド (時間)",
 }
+
+
+def _read_secrets() -> dict[str, str]:
+    """Streamlit Secrets から Azure OpenAI の設定を読む(無ければ空)."""
+    values: dict[str, str] = {}
+    try:
+        for key in _SECRET_KEYS:
+            if key in st.secrets:
+                values[key] = st.secrets[key]
+    except Exception:  # secrets.toml が無い場合など
+        return {}
+    return values
+
+
+def _render_ai_section(
+    frame: pd.DataFrame, start: pd.Timestamp, end: pd.Timestamp
+) -> None:
+    """選択期間の集計値をAzure OpenAIで要約する."""
+    st.subheader("🤖 AI活動分析(Azure OpenAI)")
+    st.write(
+        "日別の生データやデバイス名は送らず、選択期間の"
+        "**集計値のみ** をAzure OpenAIへ送信します。"
+    )
+
+    ai_input = summarize_daily_for_ai(frame, start, end)
+    with st.expander("送信される内容を確認"):
+        st.json(ai_input)
+
+    calls = st.session_state.get("daily_ai_calls", 0)
+    if st.button(
+        "🚀 AI活動分析を実行",
+        type="primary",
+        disabled=calls >= _MAX_AI_CALLS_PER_SESSION,
+    ):
+        st.session_state["daily_ai_calls"] = calls + 1
+        with st.spinner("Azure OpenAIで要約しています..."):
+            try:
+                text = generate_daily_summary(ai_input, _read_secrets())
+                st.session_state["daily_ai_result"] = {
+                    "period": (str(start.date()), str(end.date())),
+                    "text": text,
+                }
+            except RuntimeError as error:
+                st.session_state.pop("daily_ai_result", None)
+                st.error(f"❌ {error}")
+
+    if calls >= _MAX_AI_CALLS_PER_SESSION:
+        st.info("このセッションでのAI分析の回数上限に達しました。")
+
+    # 再実行(期間変更など)で結果が消えないよう session_state に保持する
+    result = st.session_state.get("daily_ai_result")
+    if result:
+        if result["period"] == (str(start.date()), str(end.date())):
+            st.markdown(result["text"])
+        else:
+            st.caption(
+                "表示中の要約は別の期間のものです。"
+                "この期間を分析するにはボタンを押してください。"
+            )
 
 
 def render_daily_dashboard(daily: pd.DataFrame) -> None:
@@ -113,3 +182,5 @@ def render_daily_dashboard(daily: pd.DataFrame) -> None:
         file_name=f"health_daily_{start}_{end}.csv",
         mime="text/csv",
     )
+
+    _render_ai_section(frame, pd.Timestamp(start), pd.Timestamp(end))
