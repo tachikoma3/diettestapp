@@ -24,7 +24,8 @@ class LoadedFile:
     kind:    "json" | "xml" | "csv"
     raw:     元のバイト列(XMLパーサーなど、bytesを受け取る処理向け)
     text:    デコード済みテキスト
-    payload: json の場合はパース済みオブジェクト、それ以外は text と同じ
+    payload: json の場合はパース済みオブジェクト、csv は text と同じ、
+             xml は None(巨大なため全文デコードしない)
     """
 
     kind: str
@@ -47,8 +48,8 @@ def decode_text(raw: bytes) -> str:
 
 
 def detect_format(text: str) -> str:
-    """テキストの内容から json / xml / csv を判定する."""
-    head = text.lstrip()[:_HEAD_CHARS]
+    """テキスト(先頭部分だけでも可)の内容から json / xml / csv を判定する."""
+    head = text.lstrip("\ufeff \t\r\n")[:_HEAD_CHARS]
     if not head:
         raise ValueError("ファイルが空です。")
 
@@ -70,11 +71,23 @@ def load_upload(uploaded_file) -> LoadedFile:
     """st.file_uploader の戻り値を読み込み、形式を判定して返す.
 
     read() は再実行時に空になるため getvalue() を使う。
+    XMLは巨大になりうる(HealthKitは100MB超)ので、全文をデコードせず
+    先頭部分だけで判定する。XMLの text / payload は空(None)になるため、
+    XMLは raw をパーサーへ渡すこと。
     """
     raw = uploaded_file.getvalue()
-    text = decode_text(raw)
-    kind = detect_format(text)
 
+    # 先頭だけで形式を判定(途中で切れたマルチバイト文字は無視)
+    head = raw[:4096].decode("utf-8-sig", errors="ignore")
+    if not head.strip():
+        # UTF-8で読めない場合はShift_JIS系として先頭を判定
+        head = raw[:4096].decode("cp932", errors="ignore")
+    kind = detect_format(head)
+
+    if kind == "xml":
+        return LoadedFile(kind=kind, raw=raw, text="", payload=None)
+
+    text = decode_text(raw)
     if kind == "json":
         # 壊れたJSONはここで json.JSONDecodeError(ValueErrorの子)になる
         payload: Any = json.loads(text)
